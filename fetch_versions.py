@@ -27,12 +27,30 @@ README_END_MARKER = "<!-- VERSIONS_END -->"
 ORG_NAME = "actions"
 GITHUB_API_URL = "https://api.github.com"
 
+# Additional non-official GitHub Actions to track
+# Format: "owner/repo"
+EXTRA_REPOS = [
+    "DeLaGuardo/setup-clojure",
+    "DeterminateSystems/determinate-nix-action",
+    "DeterminateSystems/flake-checker-action",
+    "DeterminateSystems/flakehub-cache-action",
+    "DeterminateSystems/flakehub-push",
+    "DeterminateSystems/magic-nix-cache-action",
+    "DeterminateSystems/nix-installer-action",
+    "docker/build-push-action",
+    "tailscale/github-action",
+]
+
 
 def load_unversioned() -> set[str]:
     """Load the set of repos known to have no vINTEGER tags."""
     if not UNVERSIONED_FILE.exists():
         return set()
-    return set(line.strip() for line in UNVERSIONED_FILE.read_text().splitlines() if line.strip())
+    return set(
+        line.strip()
+        for line in UNVERSIONED_FILE.read_text().splitlines()
+        if line.strip()
+    )
 
 
 def save_unversioned(repos: set[str]) -> None:
@@ -63,7 +81,7 @@ def update_readme(versions_content: str) -> None:
         # Replace existing section
         pattern = re.compile(
             re.escape(README_START_MARKER) + r".*?" + re.escape(README_END_MARKER),
-            re.DOTALL
+            re.DOTALL,
         )
         new_readme = pattern.sub(new_section, readme_text)
     else:
@@ -123,7 +141,9 @@ def fetch_tags(org: str, repo_name: str) -> list[str]:
 
         # Handle error responses (e.g., rate limiting)
         if isinstance(page_tags, dict) and "message" in page_tags:
-            print(f"  API error for {repo_name}: {page_tags['message']}", file=sys.stderr)
+            print(
+                f"  API error for {repo_name}: {page_tags['message']}", file=sys.stderr
+            )
             break
 
         if not page_tags:
@@ -140,22 +160,53 @@ def fetch_tags(org: str, repo_name: str) -> list[str]:
 
 
 def get_latest_version_tag(tags: list[str]) -> str | None:
-    """Get the latest vINTEGER tag from a list of tags."""
-    # Filter to vINTEGER tags (e.g., v1, v2, v10)
-    version_pattern = re.compile(r"^v(\d+)$")
-    version_tags = []
+    """Get the latest version tag from a list of tags.
 
+    Supports multiple version formats in priority order:
+    1. vINTEGER (e.g., v1, v2, v10) - standard GitHub Actions format
+    2. INTEGER (e.g., 1, 2, 13) - plain major version
+    3. MAJOR.MINOR (e.g., 13.4, 12.1) - semver-like without v prefix
+    """
+    # Try vINTEGER format first (e.g., v1, v2, v10)
+    vinteger_pattern = re.compile(r"^v(\d+)$")
+    vinteger_tags = []
     for tag in tags:
-        match = version_pattern.match(tag.strip())
+        match = vinteger_pattern.match(tag.strip())
         if match:
-            version_tags.append((int(match.group(1)), tag.strip()))
+            vinteger_tags.append((int(match.group(1)), tag.strip()))
 
-    if not version_tags:
-        return None
+    if vinteger_tags:
+        vinteger_tags.sort(reverse=True, key=lambda x: x[0])
+        return vinteger_tags[0][1]
 
-    # Sort by version number descending and return the latest
-    version_tags.sort(reverse=True, key=lambda x: x[0])
-    return version_tags[0][1]
+    # Try plain INTEGER format (e.g., 1, 2, 13)
+    integer_pattern = re.compile(r"^(\d+)$")
+    integer_tags = []
+    for tag in tags:
+        match = integer_pattern.match(tag.strip())
+        if match:
+            integer_tags.append((int(match.group(1)), tag.strip()))
+
+    if integer_tags:
+        integer_tags.sort(reverse=True, key=lambda x: x[0])
+        return integer_tags[0][1]
+
+    # Try MAJOR.MINOR format (e.g., 13.4, 12.1)
+    major_minor_pattern = re.compile(r"^(\d+)\.(\d+)$")
+    major_minor_tags = []
+    for tag in tags:
+        match = major_minor_pattern.match(tag.strip())
+        if match:
+            major = int(match.group(1))
+            minor = int(match.group(2))
+            major_minor_tags.append((major, minor, tag.strip()))
+
+    if major_minor_tags:
+        # Sort by major then minor descending
+        major_minor_tags.sort(reverse=True, key=lambda x: (x[0], x[1]))
+        return major_minor_tags[0][2]
+
+    return None
 
 
 def main():
@@ -172,6 +223,7 @@ def main():
     versions = []
     new_unversioned = set()
 
+    # Process official GitHub Actions from the 'actions' org
     for repo in repos:
         repo_name = repo["name"]
 
@@ -186,19 +238,42 @@ def main():
         latest_tag = get_latest_version_tag(tags)
 
         if latest_tag:
-            versions.append((repo_name, latest_tag))
+            versions.append((f"{ORG_NAME}/{repo_name}", latest_tag))
             print(f"{latest_tag}")
         else:
             print("no vINTEGER tag")
             new_unversioned.add(repo_name)
 
-    # Sort alphabetically by repo name
+    # Process additional non-official GitHub Actions
+    if EXTRA_REPOS:
+        print(f"\nProcessing {len(EXTRA_REPOS)} extra repos...")
+        for full_repo in EXTRA_REPOS:
+            org, repo_name = full_repo.split("/", 1)
+
+            # Skip repos known to have no vINTEGER tags (use full path for extra repos)
+            if full_repo in unversioned:
+                print(f"Skipping {full_repo} (cached as unversioned)")
+                new_unversioned.add(full_repo)
+                continue
+
+            print(f"Fetching tags for {full_repo}...", end=" ")
+            tags = fetch_tags(org, repo_name)
+            latest_tag = get_latest_version_tag(tags)
+
+            if latest_tag:
+                versions.append((full_repo, latest_tag))
+                print(f"{latest_tag}")
+            else:
+                print("no vINTEGER tag")
+                new_unversioned.add(full_repo)
+
+    # Sort alphabetically by full repo path
     versions.sort(key=lambda x: x[0].lower())
 
     # Build versions content
-    versions_content = "\n".join(
-        f"{ORG_NAME}/{repo_name}@{tag}" for repo_name, tag in versions
-    ) + "\n"
+    versions_content = (
+        "\n".join(f"{full_repo}@{tag}" for full_repo, tag in versions) + "\n"
+    )
 
     # Write versions.txt
     with open(VERSIONS_FILE, "w") as f:
