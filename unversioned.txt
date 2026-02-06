@@ -67,6 +67,7 @@ runner-images-PK1
 runner-images-check
 runner-images-sangeeth
 runner-images-temp
+scaleset
 setup-elixir
 setup-haskell
 setup-java
