@@ -1,5 +1,6 @@
 actions/download-artifact@v8
 actions/labeler@v6
+actions/setup-copilot@v0
 actions/setup-dotnet@v5
 actions/setup-go@v6
 actions/setup-node@v6
